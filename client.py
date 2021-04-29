@@ -1,10 +1,9 @@
 import socket
+import pickle
 import threading
 from tkinter import *
 from tkinter import messagebox
 from tkinter import ttk
-
-
 
 class chat_app:
 	"""docstring for chat_app"""
@@ -18,7 +17,6 @@ class chat_app:
 		self.client_running = False
 
 		self.users = []
-		self.messages = {self.glb:''}
 		self.current_chat = self.glb
 
 		self.root = Tk()
@@ -27,17 +25,26 @@ class chat_app:
 		self.style.theme_use("default")
 		self.style.configure("Treeview", background=self.bg,fieldbackground=self.bg, foreground="white")
 		self.style.map("Treeview")
-		self.root.protocol("WM_DELETE_WINDOW",self.on_closing)
+		self.root.protocol("WM_DELETE_WINDOW",self.close_connection)
 
 		self.connection_info()
 		self.root.mainloop()
 
-	def on_closing(self):
+	def close_connection(self):
 		if self.client_running:
 			self.client_running = False
-			self.client.send('<<exit>>'.encode('ascii'))
-			self.client.close()
+			self.client.send(pickle.dumps(('<<exit>>','')))
+			#self.client.close()
 		self.root.destroy()
+
+	def clear(self,frame):
+		for widget in frame.winfo_children():
+			widget.destroy()
+
+	def add_user(self,user):
+		ID,VALUE = user
+		self.users_list.insert(parent='',index=ID,iid=ID,values=VALUE)
+
 
 	def window(self):
 		self.clear(self.root)
@@ -94,7 +101,7 @@ class chat_app:
 		self.entry_username = Entry(self.frame_port,bg=self.bg,fg=self.fg,font=16)
 		self.label_ip = Label(self.frame_ip,bg=self.bg,fg=self.fg,text='ip:port',font=20)
 		self.label_username = Label(self.frame_port,bg=self.bg,fg=self.fg,text='username',font=20)
-		self.btn_set = Button(self.root,bg=self.bg,fg=self.fg,text='okay',command=self.chat)
+		self.btn_set = Button(self.root,bg=self.bg,fg=self.fg,text='okay',command=self.start_connection)
 
 		self.label_ip.pack(fill=BOTH,side=TOP)
 		self.label_username.pack(fill=BOTH,side=TOP)
@@ -105,7 +112,7 @@ class chat_app:
 		self.frame_ip.pack(fill=BOTH,side=LEFT,expand=True)
 		self.frame_port.pack(fill=BOTH,side=RIGHT,expand=True)
 
-	def chat(self):
+	def start_connection(self):
 		ip,username=self.entry_ip.get(),self.entry_username.get()
 		host = ip.split(':')[0]
 		port = int(ip.split(':')[1])
@@ -119,9 +126,10 @@ class chat_app:
 		status = self.client.recv(1024).decode('ascii')
 		if status=='okay':
 			self.client_running = True
+			self.client.send('okay'.encode('ascii'))
 		else:
-			messagebox.showwarning('connection error','username unavailable')
-			self.on_closing()
+			messagebox.showwarning('connection error',f'username unavailable\n{status}')
+			self.close_connection()
 			return
 
 		self.clear(self.root)
@@ -136,86 +144,61 @@ class chat_app:
 		write_thread.start()
 		receive_thread.start()
 
+	def update_users(self,users):
+		users.remove(self.username)
+		self.users_list.delete(*self.users_list.get_children())
+		self.add_user((0,'global'))
+		for user in users:
+			self.add_user((users.index(user)+1,user))
+		self.users = users
 
-	def clear(self,frame):
-		for widget in frame.winfo_children():
-			widget.destroy()
-
-	def add_user(self,user):
-		ID,VALUE = user
-		self.users_list.insert(parent='',index=ID,iid=ID,values=VALUE)
-
+	def message(self,data):
+		sender,receiver,message = data
+		if receiver==self.current_chat and receiver==self.glb:
+			self.display.delete('1.0',END)
+			self.display.insert(END,message)
+		elif (sender==self.username and receiver==self.current_chat) or (sender==self.current_chat and receiver==self.username):
+			self.display.delete('1.0',END)
+			self.display.insert(END,message)
 	def onselect(self, event):
 		try:
 			user = self.users_list.selection()[0]
-			self.messages[self.current_chat] = self.display.get('1.0',END)
-			self.display.delete('1.0',END)
 			self.current_chat = self.users_list.item(user,'values')[0]
-			if self.current_chat in self.messages:
-				self.display.insert(END,self.messages[self.current_chat])
+			data = pickle.dumps(('<<view>>',[self.username,self.current_chat]))
+			self.client.send(data)
 		except:
-			pass
+			data = pickle.dumps(('<<view>>',[self.username,self.glb]))
+			self.client.send(data)
+
 
 	def recv(self):
 		while True and self.client_running:
-			try:
-				message = self.client.recv(1024).decode('ascii')
-				if message[:7]=='update:':
-					users = message.split(':')[1].split(';')
-					users.remove(self.username)
-					self.users_list.delete(*self.users_list.get_children())
-					self.add_user((0,'global'))
-					for user in users:
-						self.add_user((users.index(user)+1,user))
-						if user not in self.users:
-							self.messages[self.glb]+='\n'+f'{user} has joined the chat'
-							self.display.delete('1.0',END)
-							self.display.insert(END,self.messages[self.current_chat])
-					self.users = users
-
-				else:
-					temp = message.split(';')
-					receiver = temp[0]
-					sender = temp[1].split(':')[0]
-					message = temp[1]
-
-					if self.current_chat not in self.messages:
-						self.messages[self.current_chat]=''
-					if receiver==self.glb:
-						if sender==self.username:
-							self.messages[receiver]+='\n'+message.replace(sender,self.me)
-						else:
-							self.messages[receiver]+='\n'+message
-					else:
-						if sender==self.username:
-							self.messages[self.current_chat]+='\n'+message.replace(sender,self.me)
-						elif sender not in self.messages:
-							self.messages[sender]=message
-						else:
-							self.messages[sender]+='\n'+message
-
-					self.display.delete('1.0',END)
-					if 'has left the chat' in message:
-						self.display.insert(END,self.messages[self.glb])
-					else:
-						self.display.insert(END,self.messages[self.current_chat])
-			except:
+			message,data = pickle.loads(self.client.recv(1024))
+			if message=="<<update>>":
+				self.update_users(data)
+			elif message=="<<message>>":
+				self.message(data)
+			elif message=="<<exit>>":
 				self.client.close()
-				break
+				break	
 
 	def write(self):
-		try:
-			selected = self.users_list.focus()
-			data = self.users_list.item(selected,'values')
-			if len(data)<1:
-				receiver=self.glb
-			else:
-				receiver=data[0]
-			message = f'{receiver};{self.username}: {self.chat_box.get()}'
-			self.client.send(message.encode('ascii'))
-			self.chat_box.delete(0,END)
-		except:
-			pass
+		#try:
+			#self.client.send('<<message>>'.encode('ascii'))
+		selected = self.users_list.focus()
+		user = self.users_list.item(selected,'values')
+		if not len(user):
+			receiver=self.glb
+		else:
+			receiver=user[0]
+		sender = self.username
+		message = self.chat_box.get()
+		data = pickle.dumps(('<<message>>',[sender,receiver,message]))
+		self.chat_box.delete(0,END)
+		self.client.send(data)
+		#except Exception as err:
+			#print(err)
+
 
 
 chat = chat_app()
